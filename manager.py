@@ -92,12 +92,8 @@ class LinuxPackageManagerApp(App):
     def __init__(self):
         super().__init__()
         self.ENABLE_COMMAND_PALETTE = False
-        import Theme
-        self.register_theme(Theme.TOKYO_NIGHT)
-        self.register_theme(Theme.DRACULA)
-        self.register_theme(Theme.NORD)
         
-        # 🔍 全自動、全通路硬體環境偵測
+        # 🔒 這裡完全沒有舊版 Textual 的 register_theme 殘留！相容性 100%
         self.sys_status = {
             "pacman": shutil.which("pacman") is not None,
             "apt": shutil.which("apt") is not None,
@@ -176,7 +172,6 @@ class LinuxPackageManagerApp(App):
             self.refresh_table_view(highlight_keyword=current_input)
             self.notify(f"📊 已切換容量排序 (由{'大到小' if self.sort_descending else '小到大'})")
 
-    # 🚀 ✨ 全通路並行掃描黑魔法
     async def load_installed_packages(self) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         table.clear()
@@ -234,13 +229,11 @@ class LinuxPackageManagerApp(App):
             stdout, _ = await process.communicate()
             if process.returncode == 0:
                 lines = stdout.decode().strip().split("\n")
-                # 跳過 snap list 的第一行標題
                 for line in lines[1:]:
                     parts = line.split()
                     if len(parts) >= 3:
                         name = parts[0]
                         version = parts[1]
-                        # snap 指令預設沒有直接輸出單一套件大小，我們設定為開源沙盒的「由系統管理」
                         self.raw_packages.append({"manager": "snap", "name": name, "version": version, "size": "沙盒管理"})
         except Exception: pass
 
@@ -248,7 +241,6 @@ class LinuxPackageManagerApp(App):
         table = self.query_one("#installed-packages-table", DataTable)
         table.clear()
         
-        # 排序：把沒辦法量化大小的 "沙盒管理" 排在後面
         self.raw_packages.sort(key=lambda x: self.parse_size_to_bytes(x["size"]), reverse=self.sort_descending)
         target = highlight_keyword.strip().lower()
         matched_row_key = None
@@ -256,10 +248,9 @@ class LinuxPackageManagerApp(App):
         for pkg in self.raw_packages:
             is_match = target and (target == pkg["name"].lower() or target in pkg["name"].lower())
             
-            # 🎨 動態設定各通路霓虹標籤外觀顏色
             if pkg["manager"] == "pacman": mgr_style = "[b green]pacman[/b green]"
             elif pkg["manager"] == "apt": mgr_style = "[b cyan]apt[/b cyan]"
-            elif pkg["manager"] == "snap": mgr_style = "[b #ff79c6]snap[/b #ff79c6]" # 亮粉紅
+            elif pkg["manager"] == "snap": mgr_style = "[b #ff79c6]snap[/b #ff79c6]"
             else: mgr_style = pkg["manager"]
 
             if is_match:
