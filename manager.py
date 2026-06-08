@@ -93,7 +93,10 @@ class LinuxPackageManagerApp(App):
         super().__init__()
         self.ENABLE_COMMAND_PALETTE = False
         
-        # 🔒 這裡完全沒有舊版 Textual 的 register_theme 殘留！相容性 100%
+        # 💡 ✨ 就是漏了這行！請把它補上去，把 AI 通靈模組綁定回主程式
+        self.ai = GeminiExplainer()
+
+        # 全自動硬體環境偵測
         self.sys_status = {
             "pacman": shutil.which("pacman") is not None,
             "apt": shutil.which("apt") is not None,
