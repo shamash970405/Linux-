@@ -294,10 +294,69 @@ class LinuxPackageManagerApp(App):
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         row_data = table.get_row(event.row_key)
-        package_name = row_data[1].replace("[b white on #ff5555]", "").replace("[/b white on #ff5555]", "").strip()
+        
+        # 🧼 萬用純 Python 黑魔法：用正規表達式把所有 [...] 形式的標籤通通洗掉！
+        import re
+        def clean_markup(text_str: str) -> str:
+            # 這行會把所有像 [b green] 或 [/b white on #ff5555] 的標籤直接抹消
+            return re.sub(r'\[\/?[a-zA-Z0-9#\s_@-]+\]', '', text_str).strip()
+        
+        raw_mgr = clean_markup(str(row_data[0]))
+        package_name = clean_markup(str(row_data[1]))
+        
+        # 🤖 動作 1：同時在右側呼叫 Gemini AI 進行智慧解說
         markdown_widget = self.query_one("#ai-output", Markdown)
         markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
         asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
+
+        # 🚪 動作 2：核心功能：根據不同來源調用專屬終端機進行解除安裝
+        self.notify(f"🛠️ 正在準備為您卸載 {raw_mgr} 套件：{package_name}")
+        
+        if raw_mgr == "pacman":
+            uninstall_cmd = f"sudo pacman -Rns {package_name}"
+        elif raw_mgr == "apt":
+            uninstall_cmd = f"sudo apt purge -y {package_name}"
+        elif raw_mgr == "snap":
+            uninstall_cmd = f"sudo snap remove {package_name}"
+        else:
+            uninstall_cmd = f"echo '未知的套件來源，無法自動刪除'"
+
+        terminal_cmd = None
+        common_terminals = ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]
+        for term in common_terminals:
+            if shutil.which(term) is not None:
+                terminal_cmd = term
+                break
+
+        try:
+            if terminal_cmd == "gnome-terminal":
+                # GNOME 終端機 (Ubuntu 預設) 的新版命令格式
+                subprocess.Popen([
+                    "gnome-terminal", "--", "bash", "-c",
+                    f"{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\""
+                ])
+            elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                # KDE Konsole (你的 Arch 預設) 與其他終端機的通用 -e 格式
+                subprocess.Popen([
+                    terminal_cmd, "-e", 
+                    f"bash -c '{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\"'"
+                ])
+            else:
+                # 🛡️ 終極防呆：背景靜默執行
+                self.notify("⚠️ 系統未偵測到主流終端機，改由背景嘗試安全解除安裝...", severity="warning")
+                subprocess.Popen(["bash", "-c", uninstall_cmd])
+
+            # 刪除完後，自動在 3 秒後重新整理表格
+            async def delayed_refresh():
+                await asyncio.sleep(3)
+                await self.load_installed_packages()
+                self.notify("🔄 已自動為您刷新全通路套件清單！")
+
+            asyncio.create_task(delayed_refresh())
+
+        except Exception as e:
+            self.notify(f"❌ 無法開啟外部終端機: {str(e)}", severity="error")
+
 
     async def update_ai_pane(self, package_name, widget):
         ai_response = await self.ai.ask_gemini(package_name)
