@@ -162,6 +162,11 @@ class LinuxPackageManagerApp(App):
     async def on_mount(self) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         table.cursor_type = "row"
+        
+        # 🔒 ✨ 終極防誤觸黑魔法：
+        # 將 DataTable 的點擊切換成「必須雙擊（Double Click）或按 Enter」才觸發 Selected 事件
+        table.click_to_select = False 
+        
         table.add_column("來源", width=12)
         table.add_column("套件名稱", width=40)
         table.add_column("目前版本", width=25)
@@ -291,25 +296,43 @@ class LinuxPackageManagerApp(App):
                 table.scroll_to_row(row_index)
             except Exception: pass
 
+    async def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        try:
+            table = self.query_one("#installed-packages-table", DataTable)
+            row_data = table.get_row(event.row_key)
+            
+            import re
+            def clean_markup(text_str: str) -> str:
+                return re.sub(r'\[\/?[a-zA-Z0-9#\s_@-]+\]', '', text_str).strip()
+            
+            package_name = clean_markup(str(row_data[1]))
+            
+            # 單純更新右側 AI 區塊，絕對不驚動終端機
+            markdown_widget = self.query_one("#ai-output", Markdown)
+            markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
+            asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
+        except Exception:
+            pass
+
+    # 🎯 行為二：只有按下 Enter 鍵（Selected） -> 「才真正跳出終端機解除安裝」
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         row_data = table.get_row(event.row_key)
         
-        # 🧼 萬用純 Python 黑魔法：用正規表達式把所有 [...] 形式的標籤通通洗掉！
+        # 🧼 用正規表達式完美剥離所有 Rich 標籤
         import re
         def clean_markup(text_str: str) -> str:
-            # 這行會把所有像 [b green] 或 [/b white on #ff5555] 的標籤直接抹消
             return re.sub(r'\[\/?[a-zA-Z0-9#\s_@-]+\]', '', text_str).strip()
         
         raw_mgr = clean_markup(str(row_data[0]))
         package_name = clean_markup(str(row_data[1]))
         
-        # 🤖 動作 1：同時在右側呼叫 Gemini AI 進行智慧解說
+        # 🤖 同步在右側加載 AI 通靈解說（一邊卸載一邊看用途）
         markdown_widget = self.query_one("#ai-output", Markdown)
         markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
         asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
 
-        # 🚪 動作 2：核心功能：根據不同來源調用專屬終端機進行解除安裝
+        # 🚪 核心功能：直接發動系統原生終端機卸載
         self.notify(f"🛠️ 正在準備為您卸載 {raw_mgr} 套件：{package_name}")
         
         if raw_mgr == "pacman":
@@ -321,6 +344,7 @@ class LinuxPackageManagerApp(App):
         else:
             uninstall_cmd = f"echo '未知的套件來源，無法自動刪除'"
 
+        # ⚡ 全自動系統預設終端機自適應探測
         terminal_cmd = None
         common_terminals = ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]
         for term in common_terminals:
@@ -330,23 +354,19 @@ class LinuxPackageManagerApp(App):
 
         try:
             if terminal_cmd == "gnome-terminal":
-                # GNOME 終端機 (Ubuntu 預設) 的新版命令格式
                 subprocess.Popen([
                     "gnome-terminal", "--", "bash", "-c",
                     f"{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\""
                 ])
             elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
-                # KDE Konsole (你的 Arch 預設) 與其他終端機的通用 -e 格式
                 subprocess.Popen([
                     terminal_cmd, "-e", 
                     f"bash -c '{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\"'"
                 ])
             else:
-                # 🛡️ 終極防呆：背景靜默執行
-                self.notify("⚠️ 系統未偵測到主流終端機，改由背景嘗試安全解除安裝...", severity="warning")
                 subprocess.Popen(["bash", "-c", uninstall_cmd])
 
-            # 刪除完後，自動在 3 秒後重新整理表格
+            # 刪除完後，自動在 3 秒後重新整理表格，讓套件從畫面上消失
             async def delayed_refresh():
                 await asyncio.sleep(3)
                 await self.load_installed_packages()
