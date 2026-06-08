@@ -56,10 +56,10 @@ class EscMenuScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="esc-container"):
-            yield Label("⚙️ 系統控制選單", id="esc-title")
+            yield Label("系統控制選單", id="esc-title")
             yield OptionList(
-                Option("🎨 更改介面主題", id="change_theme"),
-                Option("🚪 結束並退出程式", id="quit")
+                Option("更改介面主題", id="change_theme"),
+                Option("結束並退出程式", id="quit")
             )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -68,12 +68,12 @@ class EscMenuScreen(ModalScreen):
 # ================= 3. 主介面模組 =================
 class LinuxPackageManagerApp(App):
     BINDINGS = [
-        ("f1", "focus_search", "🔍 搜尋選中套件"),
-        ("escape", "open_esc_menu", "⚙️ 系統選單"),
-        ("ctrl+left", "resize_left_pane(-2)", "⬅️ 縮小左欄"),
-        ("ctrl+right", "resize_left_pane(2)", "➡️ 放大左欄"),
-        ("ctrl+up", "resize_bottom_pane(1)", "🔼 放大下欄"),
-        ("ctrl+down", "resize_bottom_pane(-1)", "🔽 縮小下欄"),
+        ("f1", "focus_search", "搜尋選中套件"),
+        ("escape", "open_esc_menu", "系統選單"),
+        ("ctrl+left", "resize_left_pane(-2)", "縮小左欄"),
+        ("ctrl+right", "resize_left_pane(2)", "放大左欄"),
+        ("ctrl+up", "resize_bottom_pane(1)", "放大下欄"),
+        ("ctrl+down", "resize_bottom_pane(-1)", "縮小下欄"),
     ]
     
     CSS = """
@@ -169,10 +169,19 @@ class LinuxPackageManagerApp(App):
         asyncio.create_task(self.load_installed_packages())
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        if event.column_index == 3:
+        # 📊 點擊「套件名稱」欄位 (Index 為 1)
+        if event.column_index == 1:
+            # 借用原本的布林值來切換：True 代表 A~Z，False 代表 Z~A
             self.sort_descending = not self.sort_descending
             current_input = self.query_one("#pkg-input", Input).value
-            self.refresh_table_view(highlight_keyword=current_input)
+            self.refresh_table_view(highlight_keyword=current_input, sort_by="name")
+            self.notify(f"🔤 已切換名稱排序 (由{'A到Z' if self.sort_descending else 'Z到A'})")
+            
+        # 📊 點擊「佔用容量」欄位 (Index 為 3)
+        elif event.column_index == 3:
+            self.sort_descending = not self.sort_descending
+            current_input = self.query_one("#pkg-input", Input).value
+            self.refresh_table_view(highlight_keyword=current_input, sort_by="size")
             self.notify(f"📊 已切換容量排序 (由{'大到小' if self.sort_descending else '小到大'})")
 
     async def load_installed_packages(self) -> None:
@@ -240,22 +249,30 @@ class LinuxPackageManagerApp(App):
                         self.raw_packages.append({"manager": "snap", "name": name, "version": version, "size": "沙盒管理"})
         except Exception: pass
 
-    def refresh_table_view(self, highlight_keyword: str = "") -> None:
+    def refresh_table_view(self, highlight_keyword: str = "", sort_by: str = "size") -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         table.clear()
         
-        self.raw_packages.sort(key=lambda x: self.parse_size_to_bytes(x["size"]), reverse=self.sort_descending)
+        # 🎯 根據點擊的欄位，執行不同的排序
+        if sort_by == "name":
+            # 照套件名稱字母排序 (A~Z 或 Z~A)
+            # 因為 A~Z 是正序，所以 reverse 要帶入與 self.sort_descending 相反的值
+            self.raw_packages.sort(key=lambda x: x["name"].lower(), reverse=not self.sort_descending)
+        else:
+            # 照容量大小排序 (原本的邏輯)
+            self.raw_packages.sort(key=lambda x: self.parse_size_to_bytes(x["size"]), reverse=self.sort_descending)
+            
         target = highlight_keyword.strip().lower()
         matched_row_key = None
 
+        # 🔄 下方的渲染表格迴圈 (完全不用動，維持原樣)
         for pkg in self.raw_packages:
-            is_match = target and (target == pkg["name"].lower() or target in pkg["name"].lower())
-            
             if pkg["manager"] == "pacman": mgr_style = "[b green]pacman[/b green]"
             elif pkg["manager"] == "apt": mgr_style = "[b cyan]apt[/b cyan]"
             elif pkg["manager"] == "snap": mgr_style = "[b #ff79c6]snap[/b #ff79c6]"
             else: mgr_style = pkg["manager"]
 
+            is_match = target and (target == pkg["name"].lower() or target in pkg["name"].lower())
             if is_match:
                 row_key = table.add_row(
                     f"[b white on #ff5555]{pkg['manager']}[/b white on #ff5555]",
