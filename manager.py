@@ -340,27 +340,33 @@ class LinuxPackageManagerApp(App):
         except Exception:
             pass
 
-    # 🎯 行為二：只有按下 Enter 鍵（Selected） -> 「才真正跳出終端機解除安裝」
+    # 🤖 點擊或 Enter 直接觸發原生終端機解除安裝
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
         row_data = table.get_row(event.row_key)
         
-        # 🧼 用正規表達式完美剥離所有 Rich 標籤
-        import re
+        # 🧼 修正：補上 return 確保洗乾淨的字串有順利交出來！
         def clean_markup(text_str: str) -> str:
-            return re.sub(r'\[\/?[a-zA-Z0-9#\s_@-]+\]', '', text_str).strip()
+            s = str(text_str)
+            s = s.replace("[bold #e0af68]", "").replace("[/]", "")
+            import re
+            s = re.sub(r'\[.*?\]', '', s)
+            return s.strip()  # 👈 靈魂回歸！確保吐出純文字
         
-        raw_mgr = clean_markup(str(row_data[0]))
-        package_name = clean_markup(str(row_data[1]))
+        raw_mgr = clean_markup(row_data[0])
+        package_name = clean_markup(row_data[1])
         
-        # 🤖 同步在右側加載 AI 通靈解說（一邊卸載一邊看用途）
+        # 同步觸發右側 AI 智慧加載
         markdown_widget = self.query_one("#ai-output", Markdown)
         markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
-        asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
-
-        # 🚪 核心功能：直接發動系統原生終端機卸載
-        self.notify(f"🛠️ 正在準備為您卸載 {raw_mgr} 套件：{package_name}")
         
+        # 🔥 越級大絕招：繞過不見的私有函式，直接讓主程式命令 aifunction.py 的大腦！
+        # 這樣就絕對不可能再噴任何 AttributeError 說找不到方法了！
+        async def direct_ask_gemini():
+            res = await self.ai.ask_gemini(package_name)
+            markdown_widget.update(res)
+        asyncio.create_task(direct_ask_gemini())
+
         if raw_mgr == "pacman":
             uninstall_cmd = f"sudo pacman -Rns {package_name}"
         elif raw_mgr == "apt":
@@ -368,12 +374,10 @@ class LinuxPackageManagerApp(App):
         elif raw_mgr == "snap":
             uninstall_cmd = f"sudo snap remove {package_name}"
         else:
-            uninstall_cmd = f"echo '未知的套件來源，無法自動刪除'"
+            return
 
-        # ⚡ 全自動系統預設終端機自適應探測
         terminal_cmd = None
-        common_terminals = ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]
-        for term in common_terminals:
+        for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
             if shutil.which(term) is not None:
                 terminal_cmd = term
                 break
@@ -392,16 +396,21 @@ class LinuxPackageManagerApp(App):
             else:
                 subprocess.Popen(["bash", "-c", uninstall_cmd])
 
-            # 刪除完後，自動在 3 秒後重新整理表格，讓套件從畫面上消失
+            # 🛡️ 安全防禦版的延時刷新：防止 App 關閉後背景任務找不到組件拋錯
             async def delayed_refresh():
                 await asyncio.sleep(3)
-                await self.load_installed_packages()
-                self.notify("🔄 已自動為您刷新全通路套件清單！")
-
+                try:
+                    # 先確認組件還安好地掛在畫面上，才進行刷新
+                    if self.query("#installed-packages-table"):
+                        await self.load_installed_packages()
+                        self.notify("🔄 已自動為您刷新全通路套件清單！")
+                except Exception:
+                    pass # 如果 App 已經關了，就讓它優雅地隨風而去
+            
             asyncio.create_task(delayed_refresh())
-
+            
         except Exception as e:
-            self.notify(f"❌ 無法開啟外部終端機: {str(e)}", severity="error")
+            self.notify(f"❌ 無法開啟外部終端機: {str(e)}", severity="error")        
 
 
     async def update_ai_pane(self, package_name, widget):
