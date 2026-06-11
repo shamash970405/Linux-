@@ -72,6 +72,7 @@ class LinuxPackageManagerApp(App):
         ("Q", "quit", "系統離開"),
         ("f1", "focus_search", "搜尋選中套件"),
         ("escape", "open_esc_menu", "系統選單"),
+        ("enter", "uninstall", "Enter 刪除"),
         ("ctrl+left", "resize_left_pane(-2)", "縮小左欄"),
         ("ctrl+right", "resize_left_pane(2)", "放大左欄"),
         ("ctrl+up", "resize_bottom_pane(1)", "放大下欄"),
@@ -119,10 +120,66 @@ class LinuxPackageManagerApp(App):
         self.left_pane_width = 40
         self.bottom_pane_height = 60
 
+   # 🎯 物理分流：完全不使用 RowSelected 事件，改用精準的鍵盤事件
     def on_key(self, event: __import__("textual").events.Key) -> None:
-        # 🔓 釋放 Esc 鍵！不要在這裡直接 exit()，否則控制選單會被物理秒殺
+        # 🔓 釋放 Esc 鍵！讓事件交給 BINDINGS 的 open_esc_menu 處理
         if event.key == "escape":
             return
+            
+        # 🔑 當使用者在 DataTable 上停留，並真正按下實體 Enter 鍵時！
+        if event.key == "enter":
+            try:
+                table = self.query_one("#installed-packages-table", DataTable)
+                # 抓取目前游標停留在哪一行
+                if table.cursor_coordinate:
+                    row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+                    row_data = table.get_row(row_key)
+                    
+                    def clean_markup(text_str: str) -> str:
+                        import re
+                        return re.sub(r'\[.*?\]', '', str(text_str)).strip()
+                    
+                    raw_mgr = clean_markup(row_data[0])
+                    package_name = clean_markup(row_data[1])
+                    
+                    self.notify(f"🗑️ 鍵盤觸發：準備解除安裝 {raw_mgr.upper()} 套件：{package_name}...")
+                    
+                    # 🛠️ 根據來源判定刪除指令
+                    if raw_mgr == "pacman": 
+                        uninstall_cmd = f"sudo pacman -Rns {package_name}"
+                    elif raw_mgr == "apt": 
+                        uninstall_cmd = f"sudo apt purge -y {package_name}"
+                    elif raw_mgr == "snap": 
+                        uninstall_cmd = f"sudo snap remove {package_name}"
+                    else: 
+                        return
+
+                    # 🚀 自動偵測桌面環境可用的終端機
+                    terminal_cmd = None
+                    for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                        if shutil.which(term) is not None:
+                            terminal_cmd = term
+                            break
+
+                    # 🖥️ 物理喚醒外部終端機執行刪除
+                    if terminal_cmd == "gnome-terminal":
+                        subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{uninstall_cmd}; read -p '執行完畢，按 [Enter] 關閉視窗... '"])
+                    elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                        subprocess.Popen([terminal_cmd, "-e", f"bash -c '{uninstall_cmd}; read -p \"執行完畢，按 [Enter] 關閉視窗... \"'"])
+                    else:
+                        subprocess.Popen(["bash", "-c", uninstall_cmd])
+
+                    # ⏳ 延時刷新管線
+                    async def delayed_refresh():
+                        await asyncio.sleep(5) # 給系統 5 秒卸載時間
+                        try:
+                            await self.load_installed_packages()
+                            self.notify("🔄 已自動為您更新全通路套件清單！")
+                        except Exception: pass
+                    asyncio.create_task(delayed_refresh())
+
+            except Exception as e:
+                self.notify(f"❌ 卸載程式啟動失敗: {str(e)}", severity="error")
 
     def parse_size_to_bytes(self, size_str: str) -> float:
         clean_str = size_str.replace("[bold #e0af68]", "").replace("[/bold #e0af68]", "")
@@ -182,14 +239,18 @@ class LinuxPackageManagerApp(App):
                 yield Markdown("等待輸入中...", id="ai-output")
                 
         with Vertical(classes="bottom-pane", id="bottom-pane"):
-            yield Label("📦 全通路已安裝套件 (點擊欄位切換排序)：", classes="section-title")
+            yield Label("📦 全通路已安裝套件 (點擊欄位切換排序 / 游標定位後按 Enter 鍵解除安裝)：", classes="section-title")
             yield DataTable(id="installed-packages-table")
             
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
-        table.click_to_select = False
+        
+        # 🎯 只保留合法的選取模式設定
+        table.click_to_select = True
+        table.cursor_type = "row"
+        
         import asyncio
         asyncio.create_task(self.load_installed_packages())
 
@@ -366,53 +427,6 @@ class LinuxPackageManagerApp(App):
             asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
         except Exception: pass
     
-    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        try:
-            table = self.query_one("#installed-packages-table", DataTable)
-            row_data = table.get_row(event.row_key)
-            def clean_markup(text_str: str) -> str:
-                import re
-                return re.sub(r'\[.*?\]', '', str(text_str)).strip()
-            
-            raw_mgr = clean_markup(row_data[0])
-            package_name = clean_markup(row_data[1])
-            
-            markdown_widget = self.query_one("#ai-output", Markdown)
-            markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
-            
-            async def direct_ask_gemini():
-                res = await self.ai.ask_gemini(package_name)
-                markdown_widget.update(res)
-            asyncio.create_task(direct_ask_gemini())
-
-            if raw_mgr == "pacman": uninstall_cmd = f"sudo pacman -Rns {package_name}"
-            elif raw_mgr == "apt": uninstall_cmd = f"sudo apt purge -y {package_name}"
-            elif raw_mgr == "snap": uninstall_cmd = f"sudo snap remove {package_name}"
-            else: return
-
-            terminal_cmd = None
-            for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
-                if shutil.which(term) is not None:
-                    terminal_cmd = term
-                    break
-
-            if terminal_cmd == "gnome-terminal":
-                subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{uninstall_cmd}; read -p '按 [Enter] 關閉... '"])
-            elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
-                subprocess.Popen([terminal_cmd, "-e", f"bash -c '{uninstall_cmd}; read -p \"按 [Enter] 關閉... \"'"])
-            else:
-                subprocess.Popen(["bash", "-c", uninstall_cmd])
-
-            async def delayed_refresh():
-                await asyncio.sleep(3)
-                try:
-                    await self.load_installed_packages()
-                    self.notify("🔄 已自動為您刷新全通路套件清單！")
-                except Exception: pass
-            asyncio.create_task(delayed_refresh())
-        except Exception as e:
-            self.notify(f"❌ 卸載啟動失敗: {str(e)}", severity="error")        
-    
     async def update_ai_pane(self, package_name, widget):
         ai_response = await self.ai.ask_gemini(package_name)
         widget.update(ai_response)
@@ -473,6 +487,13 @@ class LinuxPackageManagerApp(App):
                 self.exit()
                 
         self.push_screen(EscMenuScreen(), handle_esc_callback)
+
+    def action_uninstall(self) -> None:
+        """對齊 BINDINGS 裡的 'uninstall' 代號，讓 Footer 渲染提示並觸發解除安裝"""
+        class FakeEvent:
+            def __init__(self):
+                self.key = "enter"
+        self.on_key(FakeEvent())    
 
 if __name__ == "__main__":
     app = LinuxPackageManagerApp()
