@@ -4,7 +4,7 @@ from textual.widgets import Label, OptionList
 from textual.widgets.option_list import Option
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-import Theme  # 引入剛改好的純字串 Theme.py
+import theme  # 引入剛改好的純字串 Theme.py
 
 class ThemeMenuScreen(ModalScreen):
     """自訂的主題切換跳窗"""
@@ -40,11 +40,13 @@ class ThemeMenuScreen(ModalScreen):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         theme_choice = event.option.id
+        
+        # 🎯 滿血進化：只回傳安全的純文字字串，徹底拔除變數找不到的閃退引信！
         if theme_choice == "tokyo":
-            self.dismiss(Theme.TOKYO_NIGHT)
+            self.dismiss("tokyonight")
         elif theme_choice == "dracula":
-            self.dismiss(Theme.DRACULA)
+            self.dismiss("dracula")
         elif theme_choice == "nord":
-            self.dismiss(Theme.NORD)
+            self.dismiss("nord")
         else:
             self.dismiss("")

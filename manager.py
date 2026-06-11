@@ -5,7 +5,8 @@ import subprocess
 from google import genai
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Input, Markdown, Label, DataTable, OptionList
+from theme import ThemeManager
+from textual.widgets import Header, Footer, Input, Markdown, Label, DataTable, OptionList, Button 
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen
 from morefunction import ThemeMenuScreen
@@ -80,7 +81,7 @@ class LinuxPackageManagerApp(App):
     CSS = """
     Screen { background: #1a1b26; layout: vertical; }
     .top-box { height: 40%; layout: horizontal; border-bottom: solid #3b4261; }
-    .left-pane { width: 40%; border-right: solid #3b4261; padding: 1; }
+    .left-pane { width: 40%; border-right: solid #3b4261; padding: 1; layout: vertical; }
     .right-pane { width: 1fr; padding: 1; background: #1f2335; }
     .bottom-pane { height: 60%; padding: 1; background: #16161e; }
     .status-label { color: #7aa2f7; }
@@ -88,14 +89,26 @@ class LinuxPackageManagerApp(App):
     .section-title { color: #bb9af3; text-style: bold; margin-bottom: 1; }
     #pkg-input { margin-bottom: 1; }
     DataTable { height: 1fr; border: solid #292e42; }
+    
+    /* 🎯 讓純文字標籤在滑鼠移上去時有手勢提示，並增加點擊回饋感 */
+    .status-label:hover { color: #bb9af3; text-style: underline; }
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.ENABLE_COMMAND_PALETTE = False
         
-        # 💡 ✨ 就是漏了這行！請把它補上去，把 AI 通靈模組綁定回主程式
+        # 🎨 初始化主題管理與 AI 模組
+        from theme import ThemeManager 
+        self.theme_mgr = ThemeManager("tokyonight")
         self.ai = GeminiExplainer()
+
+        # 📦 核心資料庫暫存區與排序狀態
+        self.raw_packages = []
+        self.installed_packages = []
+        self.current_sort = "name"
+        self.sort_descending = False
+        self.current_priority_manager = "apt"  # 🎯 預設優先置頂 Ubuntu APT
 
         # 全自動硬體環境偵測
         self.sys_status = {
@@ -104,19 +117,12 @@ class LinuxPackageManagerApp(App):
             "snap": shutil.which("snap") is not None
         }
         self.left_pane_width = 40
-        self.left_pane_width = 40
         self.bottom_pane_height = 60
-        self.sort_descending = True  # 保留你原本的變數
-        self.current_sort_by = "size" # 預設依大小排序
-        self.raw_packages = []
-        
-        # 🔄 就在這裡加！新增當前優先置頂的套件來源管理員（None 代表預設不置頂）
-        self.current_priority_manager = None
-    def on_key(self, event: __import__("textual").events.Key) -> None:
-        if event.key == "escape":
-            event.stop()  # 阻止事件繼續傳遞給其他元件
-            self.exit()   # 物理退出 Textual App
 
+    def on_key(self, event: __import__("textual").events.Key) -> None:
+        # 🔓 釋放 Esc 鍵！不要在這裡直接 exit()，否則控制選單會被物理秒殺
+        if event.key == "escape":
+            return
 
     def parse_size_to_bytes(self, size_str: str) -> float:
         clean_str = size_str.replace("[bold #e0af68]", "").replace("[/bold #e0af68]", "")
@@ -145,7 +151,7 @@ class LinuxPackageManagerApp(App):
             bar_color = "red" if used_percent > 85 else ("yellow" if used_percent > 60 else "green")
             bar = f"[{bar_color}]" + "█" * filled_length + f"[/{bar_color}]" + "░" * (bar_length - filled_length)
             return (
-                f"💾 系統容量狀態 (根目錄 /)：\n"
+                f"💾 系統容量狀態 (根目錄 / block)：\n"
                 f"  {bar}  {used_percent:.1f}%\n"
                 f"  - 總大小: {total_gb:.1f} GB\n"
                 f"  - 已使用: {used_gb:.1f} GB\n"
@@ -158,52 +164,80 @@ class LinuxPackageManagerApp(App):
         with Horizontal(classes="top-box", id="top-box"):
             with Vertical(classes="left-pane", id="left-pane"):
                 yield Label("🔍 系統環境偵測：", classes="section-title")
-                status_text = "\n".join(f"  - {mgr}: {'✅ 可用' if avail else '❌ 未安裝'}" for mgr, avail in self.sys_status.items())
-                yield Label(status_text, classes="status-label")
+                
+                # 🚀 完美初心外觀：重載回純文字清單，但給予隱形點擊 id 屬性
+                for mgr, avail in self.sys_status.items():
+                    status_icon = "✅ 可用" if avail else "❌ 未安裝"
+                    yield Label(
+                        f"  - {mgr}: {status_icon}", 
+                        id=f"lbl-{mgr}", 
+                        classes="status-label"
+                    )
+                
                 yield Label(self.get_disk_info(), classes="disk-label")
+            
             with Vertical(classes="right-pane"):
                 yield Label("🤖 Gemini AI 智慧解說與查詢：", classes="section-title")
                 yield Input(placeholder="在此輸入套件名稱，下方將自動高亮定位...", id="pkg-input")
                 yield Markdown("等待輸入中...", id="ai-output")
+                
         with Vertical(classes="bottom-pane", id="bottom-pane"):
             yield Label("📦 全通路已安裝套件 (點擊欄位切換排序)：", classes="section-title")
             yield DataTable(id="installed-packages-table")
+            
         yield Footer()
 
-    async def on_mount(self) -> None:
+    def on_mount(self) -> None:
         table = self.query_one("#installed-packages-table", DataTable)
-        table.cursor_type = "row"
-        
-        # 🔒 ✨ 終極防誤觸黑魔法：
-        # 將 DataTable 的點擊切換成「必須雙擊（Double Click）或按 Enter」才觸發 Selected 事件
-        table.click_to_select = False 
-        
-        table.add_column("來源", width=12)
-        table.add_column("套件名稱", width=40)
-        table.add_column("目前版本", width=25)
-        table.add_column("佔用容量", width=18)
+        table.click_to_select = False
+        import asyncio
         asyncio.create_task(self.load_installed_packages())
 
+    # 鼠标隐形点击术事件接收器
+    def on_click(self, event: __import__("textual").events.Click) -> None:
+        # 🎯 透過 event.control 安全撈取觸發點擊的組件
+        if hasattr(event, "control") and event.control:
+            target_id = event.control.id
+        else:
+            return  # 如果點到空白處、沒有組件控制權，直接安全跳出
+        
+        # 🎯 根據點擊的標籤 id，精準切換置頂來源
+        if target_id == "lbl-pacman":
+            self.current_priority_manager = "pacman"
+            self.notify("🎯 已將優先套件庫切換至：Arch Pacman")
+        elif target_id == "lbl-apt":
+            self.current_priority_manager = "apt"
+            self.notify("🎯 已將優先套件庫切換至：Ubuntu APT")
+        elif target_id == "lbl-snap":
+            self.current_priority_manager = "snap"
+            self.notify("🎯 已將優先套件庫切換至：Snap 沙盒")
+        else:
+            return
+            
+        # 🚀 帶著搜尋框關鍵字，滿血洗牌刷新 5 欄位表格！
+        current_keyword = self.query_one("#pkg-input").value if hasattr(self, 'query_one') else ""
+        self.refresh_table_view(highlight_keyword=current_keyword, sort_by=self.current_sort)
+
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
-        # 🎯 精準對齊 5 欄位的點擊排序目標
         if event.column_index == 1:
             self.current_sort = "name"
         elif event.column_index == 2:
-            self.current_sort = "group"  # 👈 點擊應用群組
+            self.current_sort = "group"
         elif event.column_index == 4:
-            self.current_sort = "size"   # 👈 點擊佔用容量（移到索引 4）
+            self.current_sort = "size"
         else:
             return
 
         self.sort_descending = not self.sort_descending
-        # 🚀 關鍵：確保傳入當前的排序目標
         self.refresh_table_view(sort_by=self.current_sort)
 
     async def load_installed_packages(self) -> None:
-        table = self.query_one("#installed-packages-table", DataTable)
-        table.clear()
+        try:
+            table = self.query_one("#installed-packages-table", DataTable)
+            table.clear()
+        except Exception: pass
+        
         self.raw_packages = []
-
         tasks = []
         if self.sys_status["pacman"]: tasks.append(self._scan_pacman())
         if self.sys_status["apt"]: tasks.append(self._scan_apt())
@@ -265,10 +299,11 @@ class LinuxPackageManagerApp(App):
         except Exception: pass
 
     def refresh_table_view(self, highlight_keyword: str = "", sort_by: str = "size") -> None:
-        table = self.query_one("#installed-packages-table", DataTable)
-        table.clear()
-
-        # 🎯 欄位物理重置（你已經寫好的部分，保留不變）
+        try:
+            table = self.query_one("#installed-packages-table", DataTable)
+        except Exception:
+            return
+            
         table.clear(columns=True)
         table.add_column("[bold #7aa2f7]來源[/]", width=8)
         table.add_column("[bold #7aa2f7]套件名稱[/]", width=22)
@@ -276,53 +311,32 @@ class LinuxPackageManagerApp(App):
         table.add_column("[bold #7aa2f7]目前版本[/]", width=22)
         table.add_column("[bold #7aa2f7]佔用容量[/]", width=12)
 
-        # 🎯 核心修復：防禦性抓取全域套件清單
-        # 如果 self.raw_packages 是空的，我們自動 fallback 去讀 self.installed_packages 或是原本的資料庫變數
-        packages_source = []
-        if hasattr(self, 'raw_packages') and self.raw_packages:
-            packages_source = self.raw_packages
-        elif hasattr(self, 'installed_packages') and self.installed_packages:
-            packages_source = self.installed_packages
-        
-        # 如果發現兩個都是空的，說明背景非同步還在加載，先跳出避免空迴圈
-        if not packages_source:
-            return
-
+        packages_source = self.raw_packages if self.raw_packages else []
         filtered = []
         kw = highlight_keyword.lower().strip()
-        for p in packages_source:  # 👈 使用安全的資料來源
+        for p in packages_source:
             if not kw or kw in p.get("name", "").lower():
                 filtered.append(p)
 
-        # 🔧 核心洗牌邏輯
         def sort_key(x):
-            # 1. 來源置頂權重
             is_priority = 1 if x.get("manager") == self.current_priority_manager else 0
-            
-            # 🎯 強制對齊：如果有點擊狀態，以 current_sort 為準；否則吃傳進來的參數
             current_sort_target = self.current_sort if hasattr(self, 'current_sort') else sort_by
-            
-            # 2. 次要排序依據
             if current_sort_target == "size":
                 secondary = self.parse_size_to_bytes(x.get("size", ""))
             elif current_sort_target == "group":
                 secondary = x.get("group", "system").lower()
             else:
                 secondary = x.get("name", "").lower()
-                
             return (is_priority, secondary)
 
-        # 🔀 執行排序
         filtered.sort(key=sort_key, reverse=self.sort_descending)
 
-        # 🚀 倒進畫面上：精準塞入 5 個欄位資料
         for p in filtered:
             pkg_manager = p.get("manager", "unknown")
             pkg_name = p.get("name", "unknown")
             pkg_version = p.get("version", "unknown")
             pkg_size = p.get("size", "N/A")
             
-            # 🎯 建立防禦型群組偵測
             app_group = p.get("group", "System")
             if "gnome" in pkg_name.lower() or "gtk" in pkg_name.lower():
                 app_group = "GNOME"
@@ -331,7 +345,6 @@ class LinuxPackageManagerApp(App):
             elif pkg_name in ["python3", "gcc", "git", "make"]:
                 app_group = "Development"
 
-            # 💡 餵入 5 個元素，把應用群組高亮塞在第 3 個位置！
             table.add_row(
                 f"[bold #e0af68]{pkg_manager}[/]",
                 pkg_name,
@@ -344,93 +357,61 @@ class LinuxPackageManagerApp(App):
         try:
             table = self.query_one("#installed-packages-table", DataTable)
             row_data = table.get_row(event.row_key)
-            
             import re
             def clean_markup(text_str: str) -> str:
                 return re.sub(r'\[\/?[a-zA-Z0-9#\s_@-]+\]', '', text_str).strip()
-            
             package_name = clean_markup(str(row_data[1]))
-            
-            # 單純更新右側 AI 區塊，絕對不驚動終端機
             markdown_widget = self.query_one("#ai-output", Markdown)
             markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
             asyncio.create_task(self.update_ai_pane(package_name, markdown_widget))
-        except Exception:
-            pass
+        except Exception: pass
     
-
-    # 🤖 點擊或 Enter 直接觸發原生終端機解除安裝
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        table = self.query_one("#installed-packages-table", DataTable)
-        row_data = table.get_row(event.row_key)
-        
-        # 🧼 修正：補上 return 確保洗乾淨的字串有順利交出來！
-        def clean_markup(text_str: str) -> str:
-            s = str(text_str)
-            s = s.replace("[bold #e0af68]", "").replace("[/]", "")
-            import re
-            s = re.sub(r'\[.*?\]', '', s)
-            return s.strip()  # 👈 靈魂回歸！確保吐出純文字
-        
-        raw_mgr = clean_markup(row_data[0])
-        package_name = clean_markup(row_data[1])
-        
-        # 同步觸發右側 AI 智慧加載
-        markdown_widget = self.query_one("#ai-output", Markdown)
-        markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
-        
-        # 🔥 越級大絕招：繞過不見的私有函式，直接讓主程式命令 aifunction.py 的大腦！
-        # 這樣就絕對不可能再噴任何 AttributeError 說找不到方法了！
-        async def direct_ask_gemini():
-            res = await self.ai.ask_gemini(package_name)
-            markdown_widget.update(res)
-        asyncio.create_task(direct_ask_gemini())
-
-        if raw_mgr == "pacman":
-            uninstall_cmd = f"sudo pacman -Rns {package_name}"
-        elif raw_mgr == "apt":
-            uninstall_cmd = f"sudo apt purge -y {package_name}"
-        elif raw_mgr == "snap":
-            uninstall_cmd = f"sudo snap remove {package_name}"
-        else:
-            return
-
-        terminal_cmd = None
-        for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
-            if shutil.which(term) is not None:
-                terminal_cmd = term
-                break
-
         try:
+            table = self.query_one("#installed-packages-table", DataTable)
+            row_data = table.get_row(event.row_key)
+            def clean_markup(text_str: str) -> str:
+                import re
+                return re.sub(r'\[.*?\]', '', str(text_str)).strip()
+            
+            raw_mgr = clean_markup(row_data[0])
+            package_name = clean_markup(row_data[1])
+            
+            markdown_widget = self.query_one("#ai-output", Markdown)
+            markdown_widget.update(f"⏳ 正在幫您通靈已安裝的 `{package_name}`...")
+            
+            async def direct_ask_gemini():
+                res = await self.ai.ask_gemini(package_name)
+                markdown_widget.update(res)
+            asyncio.create_task(direct_ask_gemini())
+
+            if raw_mgr == "pacman": uninstall_cmd = f"sudo pacman -Rns {package_name}"
+            elif raw_mgr == "apt": uninstall_cmd = f"sudo apt purge -y {package_name}"
+            elif raw_mgr == "snap": uninstall_cmd = f"sudo snap remove {package_name}"
+            else: return
+
+            terminal_cmd = None
+            for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                if shutil.which(term) is not None:
+                    terminal_cmd = term
+                    break
+
             if terminal_cmd == "gnome-terminal":
-                subprocess.Popen([
-                    "gnome-terminal", "--", "bash", "-c",
-                    f"{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\""
-                ])
+                subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{uninstall_cmd}; read -p '按 [Enter] 關閉... '"])
             elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
-                subprocess.Popen([
-                    terminal_cmd, "-e", 
-                    f"bash -c '{uninstall_cmd}; echo; echo \"=============================\"; read -p \"卸載程序執行完畢，按 [Enter] 鍵關閉視窗...\"'"
-                ])
+                subprocess.Popen([terminal_cmd, "-e", f"bash -c '{uninstall_cmd}; read -p \"按 [Enter] 關閉... \"'"])
             else:
                 subprocess.Popen(["bash", "-c", uninstall_cmd])
 
-            # 🛡️ 安全防禦版的延時刷新：防止 App 關閉後背景任務找不到組件拋錯
             async def delayed_refresh():
                 await asyncio.sleep(3)
                 try:
-                    # 先確認組件還安好地掛在畫面上，才進行刷新
-                    if self.query("#installed-packages-table"):
-                        await self.load_installed_packages()
-                        self.notify("🔄 已自動為您刷新全通路套件清單！")
-                except Exception:
-                    pass # 如果 App 已經關了，就讓它優雅地隨風而去
-            
+                    await self.load_installed_packages()
+                    self.notify("🔄 已自動為您刷新全通路套件清單！")
+                except Exception: pass
             asyncio.create_task(delayed_refresh())
-            
         except Exception as e:
-            self.notify(f"❌ 無法開啟外部終端機: {str(e)}", severity="error")        
-
+            self.notify(f"❌ 卸載啟動失敗: {str(e)}", severity="error")        
     
     async def update_ai_pane(self, package_name, widget):
         ai_response = await self.ai.ask_gemini(package_name)
@@ -478,9 +459,19 @@ class LinuxPackageManagerApp(App):
                         self.app.css = new_css
                         self.refresh()
                         self.notify("🎨 佈景主題切換成功！")
-                self.push_screen(ThemeMenuScreen(), apply_theme_callback)
+                
+                # 🛡️ 終極安全防禦：用 try-except 包裹選單，防止 theme.py 缺少變數導致閃退
+                try:
+                    self.push_screen(ThemeMenuScreen(), apply_theme_callback)
+                except AttributeError as e:
+                    self.notify(f"⚠️ 主題模組缺少變數，無法加載：{str(e)}", severity="warning")
+                except Exception as e:
+                    self.notify(f"⚠️ 主題切換發生未知錯誤：{str(e)}", severity="error")
+                    
             elif action == "quit":
-                self.action_quit()
+                # 🧼 修正：對齊主程式的退出指令
+                self.exit()
+                
         self.push_screen(EscMenuScreen(), handle_esc_callback)
 
 if __name__ == "__main__":
