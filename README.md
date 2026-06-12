@@ -1,6 +1,7 @@
 # 📦 Linux 套件管理助理 (LinuxPackageManagerApp)
 
-一個基於 `Textual` 終端機 UI (TUI) 框架打造的開源跨平台 Linux 套件管理工具。完美整合 **Arch Linux (`pacman`)**、**Ubuntu / Debian (`apt`)** 與**新世代沙盒 (`snap`)** 三大通路並行多工掃描，並內建 **Gemini AI 智慧解說**與極簡流暢的「一擊必殺」單擊卸載流。
+一個基於 `Textual` 終端機 UI (TUI) 框架打造的開源跨平台 Linux 套件管理工具。
+完美整合 **Arch Linux (`pacman`)**、**Ubuntu / Debian (`apt`)** 與**新世代沙盒 (`snap`)** 三大通路並行多工掃描，並內建Gemini詢問套件工具。
 
 ---
 <img width="1923" height="1080" alt="image" src="https://github.com/user-attachments/assets/b352491f-3266-4f17-8c7b-4744f4d6d766" />
