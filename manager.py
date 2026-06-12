@@ -17,6 +17,12 @@ class GeminiExplainer:
         api_key = os.environ.get("GEMINI_API_KEY")
         self.client = genai.Client(api_key=api_key) if api_key else None
 
+    def refresh_client(self, new_token: str) -> None:
+        if new_token:
+            self.client = genai.Client(api_key=new_token)
+        else:
+            self.client = None
+
     async def ask_gemini(self, package_name: str) -> str:
         if not self.client:
             return "⚠️ 未偵測到 `GEMINI_API_KEY` 環境變數。"
@@ -60,19 +66,24 @@ class EscMenuScreen(ModalScreen):
             yield Label("系統控制選單", id="esc-title")
             yield OptionList(
                 Option("更改介面主題", id="change_theme"),
+                Option("⚙️ 系統設定 (API Token)", id="open_settings"),  # 🎯 就是缺了這一行！把它補上去！
                 Option("結束並退出程式", id="quit")
             )
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
 
+class PackageTable(DataTable):
+    """專屬綁定 Enter 鍵的表格，徹底解決與其他輸入框的按鍵衝突"""
+    BINDINGS = [
+        ("enter", "uninstall", "Enter 刪除")
+    ]
 # ================= 3. 主介面模組 =================
 class LinuxPackageManagerApp(App):
     BINDINGS = [
         ("Q", "quit", "系統離開"),
         ("f1", "focus_search", "搜尋選中套件"),
         ("escape", "open_esc_menu", "系統選單"),
-        ("enter", "uninstall", "Enter 刪除"),
         ("ctrl+left", "resize_left_pane(-2)", "縮小左欄"),
         ("ctrl+right", "resize_left_pane(2)", "放大左欄"),
         ("ctrl+up", "resize_bottom_pane(1)", "放大下欄"),
@@ -103,6 +114,7 @@ class LinuxPackageManagerApp(App):
         from theme import ThemeManager 
         self.theme_mgr = ThemeManager("tokyonight")
         self.ai = GeminiExplainer()
+        self.current_gemini_token = os.environ.get("GEMINI_API_KEY", "")
 
         # 📦 核心資料庫暫存區與排序狀態
         self.raw_packages = []
@@ -126,17 +138,22 @@ class LinuxPackageManagerApp(App):
         if event.key == "escape":
             return
             
-        # 🔑 當使用者在 DataTable 上停留，並真正按下實體 Enter 鍵時！
+        # 🔑 當使用者按下實體 Enter 鍵時！
         if event.key == "enter":
             try:
-                table = self.query_one("#installed-packages-table", DataTable)
+                # 🛡️ 防禦盾：如果在設定視窗裡面找不到表格，就「安靜跳出」不要噴錯！
+                try:
+                    table = self.query_one("#installed-packages-table", __import__("textual").widgets.DataTable)
+                except Exception:
+                    return  # 🤫 找不到表格代表正在輸入金鑰或搜尋，直接放行！
+
                 # 抓取目前游標停留在哪一行
                 if table.cursor_coordinate:
                     row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
                     row_data = table.get_row(row_key)
                     
+                    import re
                     def clean_markup(text_str: str) -> str:
-                        import re
                         return re.sub(r'\[.*?\]', '', str(text_str)).strip()
                     
                     raw_mgr = clean_markup(row_data[0])
@@ -154,6 +171,7 @@ class LinuxPackageManagerApp(App):
                     else: 
                         return
 
+                    import shutil, subprocess, asyncio
                     # 🚀 自動偵測桌面環境可用的終端機
                     terminal_cmd = None
                     for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
@@ -179,6 +197,7 @@ class LinuxPackageManagerApp(App):
                     asyncio.create_task(delayed_refresh())
 
             except Exception as e:
+                # 只有真正發生卸載異常時，才跳出紅字警告
                 self.notify(f"❌ 卸載程式啟動失敗: {str(e)}", severity="error")
 
     def parse_size_to_bytes(self, size_str: str) -> float:
@@ -432,6 +451,10 @@ class LinuxPackageManagerApp(App):
         widget.update(ai_response)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        
+        if event.input.id != "pkg-input":
+            return
+
         pkg_name = event.value.strip()
         if not pkg_name:
             self.refresh_table_view()
@@ -468,32 +491,91 @@ class LinuxPackageManagerApp(App):
     def action_open_esc_menu(self) -> None:
         def handle_esc_callback(action: str) -> None:
             if action == "change_theme":
-                def apply_theme_callback(new_css: str) -> None:
-                    if new_css:
-                        self.app.css = new_css
-                        self.refresh()
-                        self.notify("🎨 佈景主題切換成功！")
-                
-                # 🛡️ 終極安全防禦：用 try-except 包裹選單，防止 theme.py 缺少變數導致閃退
+                def apply_theme_callback(theme_name: str) -> None:
+                    if theme_name:
+                        try:
+                            self.theme_mgr.change_theme(theme_name)
+                            self.app.css = self.theme_mgr.get_css()
+                            self.refresh()
+                            self.notify(f"🎨 佈景主題已成功切換至：{theme_name.upper()}")
+                        except Exception as e:
+                            self.notify(f"⚠️ 主題套用失敗：{str(e)}", severity="error")
                 try:
                     self.push_screen(ThemeMenuScreen(), apply_theme_callback)
-                except AttributeError as e:
-                    self.notify(f"⚠️ 主題模組缺少變數，無法加載：{str(e)}", severity="warning")
                 except Exception as e:
-                    self.notify(f"⚠️ 主題切換發生未知錯誤：{str(e)}", severity="error")
+                    self.notify(f"⚠️ 無法加載主題選單：{str(e)}", severity="error")
                     
+            elif action == "open_settings":
+                # 🚀 效率核心：精準引入步驟，確保 SettingsScreen 類別絕對被正確呼叫
+                from morefunction import SettingsScreen
+                
+                def apply_settings_callback(saved_token: str) -> None:
+                    if saved_token is not None:  # 使用者按了儲存
+                        self.current_gemini_token = saved_token
+                        self.ai.refresh_client(saved_token)  # 重新初始化 AI 大腦
+                        if saved_token:
+                            self.notify("⚙️ Gemini API 金鑰儲存成功，AI 功能已全面上線！")
+                        else:
+                            self.notify("⚠️ 金鑰已清空，AI 解說功能將暫時關閉", severity="warning")
+
+                # 物理彈出輸入框視窗
+                self.push_screen(SettingsScreen(self.current_gemini_token), apply_settings_callback)
+
             elif action == "quit":
-                # 🧼 修正：對齊主程式的退出指令
                 self.exit()
                 
         self.push_screen(EscMenuScreen(), handle_esc_callback)
 
     def action_uninstall(self) -> None:
-        """對齊 BINDINGS 裡的 'uninstall' 代號，讓 Footer 渲染提示並觸發解除安裝"""
-        class FakeEvent:
-            def __init__(self):
-                self.key = "enter"
-        self.on_key(FakeEvent())    
+        try:
+            table = self.query_one("#installed-packages-table", DataTable)
+            
+            # 🛡️ 最終防線：確認表格真的有獲得焦點才執行，保護其他輸入框
+            if not table.has_focus:
+                return
+
+            if table.cursor_coordinate:
+                row_key, _ = table.coordinate_to_cell_key(table.cursor_coordinate)
+                row_data = table.get_row(row_key)
+                
+                import re
+                def clean_markup(text_str: str) -> str:
+                    return re.sub(r'\[.*?\]', '', str(text_str)).strip()
+                
+                raw_mgr = clean_markup(row_data[0])
+                package_name = clean_markup(row_data[1])
+                
+                self.notify(f"🗑️ 準備解除安裝 {raw_mgr.upper()} 套件：{package_name}...")
+                
+                if raw_mgr == "pacman": uninstall_cmd = f"sudo pacman -Rns {package_name}"
+                elif raw_mgr == "apt": uninstall_cmd = f"sudo apt purge -y {package_name}"
+                elif raw_mgr == "snap": uninstall_cmd = f"sudo snap remove {package_name}"
+                else: return
+
+                import shutil, subprocess, asyncio
+                terminal_cmd = None
+                for term in ["konsole", "gnome-terminal", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                    if shutil.which(term) is not None:
+                        terminal_cmd = term
+                        break
+
+                if terminal_cmd == "gnome-terminal":
+                    subprocess.Popen(["gnome-terminal", "--", "bash", "-c", f"{uninstall_cmd}; read -p '執行完畢，按 [Enter] 關閉視窗... '"])
+                elif terminal_cmd in ["konsole", "xfce4-terminal", "kitty", "alacritty", "xterm"]:
+                    subprocess.Popen([terminal_cmd, "-e", f"bash -c '{uninstall_cmd}; read -p \"執行完畢，按 [Enter] 關閉視窗... \"'"])
+                else:
+                    subprocess.Popen(["bash", "-c", uninstall_cmd])
+
+                async def delayed_refresh():
+                    await asyncio.sleep(5)
+                    try:
+                        await self.load_installed_packages()
+                        self.notify("🔄 已自動為您更新全通路套件清單！")
+                    except Exception: pass
+                asyncio.create_task(delayed_refresh())
+
+        except Exception:
+            pass # 找不到表格時（例如正在子視窗）安全靜默跳出，不拋出紅字   
 
 if __name__ == "__main__":
     app = LinuxPackageManagerApp()
